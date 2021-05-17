@@ -1,1 +1,3 @@
 values.override.yaml
+/logs
+logs.tgz
