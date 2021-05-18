@@ -56,12 +56,22 @@ function installMongoChart() {
 auth:
   rootPassword: $(generateRandomPassword)
 EOF
-    installChart mongodb ${ARTIFACTORY_URL}/${MONGO_REPO_NAME}/mongodb-${MONGO_VERSION}.tgz mongodb
+    installChart mongodb ${MONGO_HELM_TGZ_URL} mongodb
 }
 
 function installShipaChart() {
     local -r _mongo_password="$(kubectl get secrets --namespace mongodb mongodb --output jsonpath='{.data.mongodb-root-password}' | base64 --decode)"
     local -r _mongo_port="$(kubectl get svc --namespace mongodb mongodb --output jsonpath='{.spec.ports[0].port}')"
+
+    helm install shipa ${SHIPA_HELM_TGZ_URL} --namespace shipa-system --dry-run --set=auth.adminUser=abc@shipa.io --set=auth.adminPassword=abc123 >/tmp/shipa.yaml
+    local -r _buildkit_frontend_source="${PRIVATE_REGISTRY_URL}/$(grep 'frontend-source:' /tmp/shipa.yaml | head -n1 | awk '{print $2}' | sed 's/"//g')"
+    local -r _platforms_static_image="${PRIVATE_REGISTRY_URL}/$(grep 'shipasoftware/static:' /tmp/shipa.yaml | head -n1 | awk '{print $2}' | sed 's/"//g')"
+    local -r _dashboard_image="${PRIVATE_REGISTRY_URL}/$(grep 'shipasoftware/dashboard:' /tmp/shipa.yaml | head -n1 | awk '{print $2}' | sed 's/"//g')"
+    rm -f /tmp/shipa.yaml
+
+    if [[ -z "${_buildkit_frontend_source}" || -z "${_platforms_static_image}" || -z "${_dashboard_image}" ]]; then
+        exitError "Unable to determine configuration for buildkit frontend source, platform static, and/or dashboard"
+    fi
 
     cat >"${DIR}/values.override.yaml" <<EOF
 service:
@@ -87,14 +97,14 @@ externalMongodb:
   tls:
     enable: false
 buildkit:
-  frontendSource: ${BUILDKIT_FRONTEND_SOURCE}
+  frontendSource: ${_buildkit_frontend_source}
 platforms:
-  staticImage: ${PLATFORMS_STATIC_IMAGE}
+  staticImage: ${_platforms_static_image}
 dashboard:
-  image: ${DASHBOARD_IMAGE}
+  image: ${_dashboard_image}
 EOF
 
-    installChart shipa ${ARTIFACTORY_URL}/${SHIPA_REPO_NAME}/shipa-${SHIPA_VERSION}.tgz ${SHIPA_NAMESPACE}
+    installChart shipa ${SHIPA_HELM_TGZ_URL} ${SHIPA_NAMESPACE}
 }
 
 function getShipaLoginInfo() {
@@ -153,19 +163,22 @@ spec:
 EOF
 }
 
-export DIR="${DIR:-$(pwd)}"
 export SHIPA_REPO_NAME="shipa-helm-rc"
 export SHIPA_VERSION="1.3.0-rc-12"
 export SHIPA_CLI_VERSION="1.3.0-rc-7"
-export PRIVATE_REGISTRY_URL="docker-virtual.artifactory.renhsc.com"
-export BUILDKIT_FRONTEND_SOURCE=${PRIVATE_REGISTRY_URL}/docker/dockerfile
-export PLATFORMS_STATIC_IMAGE=${PRIVATE_REGISTRY_URL}/shipasoftware/static:v1.2
-export DASHBOARD_IMAGE=${PRIVATE_REGISTRY_URL}/shipasoftware/dashboard:v1.3.0-rc-12-2
+
 export MONGO_VERSION="10.12.6"
 export MONGO_REPO_NAME="bitnami-helm"
+
+export PRIVATE_REGISTRY_URL="docker-virtual.artifactory.renhsc.com"
 export ARTIFACTORY_URL="https://artifactory.renhsc.com/artifactory"
+export MONGO_HELM_TGZ_URL="${ARTIFACTORY_URL}/${MONGO_REPO_NAME}/mongodb-${MONGO_VERSION}.tgz"
+export SHIPA_HELM_TGZ_URL="${ARTIFACTORY_URL}/${SHIPA_REPO_NAME}/shipa-${SHIPA_VERSION}.tgz"
+
 export SHIPA_NAMESPACE="shipa-system"
-export API_EXTERNALPORT="8081"
+export API_EXTERNALPORT="8081" # Managed through HA Proxy configuration
+
+export DIR="${DIR:-$(pwd)}"
 
 writeInfo "Pulling current cluster metadata."
 export STACK_INFO="$(kubectl get configmaps ddmi-metadata --namespace default --output jsonpath='{.data}')"
