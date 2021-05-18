@@ -136,7 +136,7 @@ function setupShipaCli() {
     shipa login
 }
 
-function redeployDashboardFromArtifactory() {
+function redeployDashboardFromPrivateRegistry() {
     for _version in $(shipa app deploy list --app dashboard | grep '| \*' | awk '{print $4}' | awk -F ':' '{print $3}'); do
         shipa app deactivate --app dashboard --version ${_version/v/}
     done
@@ -146,9 +146,10 @@ function redeployDashboardFromArtifactory() {
     shipa app deploy --app dashboard --image ${PRIVATE_REGISTRY_URL}/shipasoftware/dashboard:v${SHIPA_DASHBOARD_VERSION} --private-image
 }
 
+export DIR="${DIR:-$(pwd)}"
 export SHIPA_REPO_NAME="shipa-helm-rc"
 export SHIPA_VERSION="1.3.0-rc-12"
-export SHIPA_DASHBOARD_VERSION="1.3.0-rc-9"
+export SHIPA_DASHBOARD_VERSION="v1.3.0-rc-12-2" # TODO: pull from Values file: yq r values.yaml dashboard.image
 export SHIPA_CLI_VERSION="1.3.0-rc-7"
 export PRIVATE_REGISTRY_URL="docker-virtual.artifactory.renhsc.com"
 export BUILDKIT_FRONTEND_SOURCE=${PRIVATE_REGISTRY_URL}/docker/dockerfile
@@ -183,5 +184,5 @@ setupShipaCli
 read -p "Redeploy the dashboard app using private registry (y/N)? " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    redeployDashboardFromArtifactory
+    redeployDashboardFromPrivateRegistry
 fi
