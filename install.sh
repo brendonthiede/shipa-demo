@@ -18,28 +18,6 @@ function writeInfo() {
     writeMessage "INFO" "${1}"
 }
 
-function copyRegistryCredentials() {
-    local -r _target_namespace="${1}"
-    local -r _secret_name="regcred"
-    local -r _source_namespace="default"
-    cat <<EOF | kubectl apply --namespace "${_target_namespace}" -f -
-apiVersion: v1
-data:
-  .dockerconfigjson: $(kubectl get secrets --namespace ${_source_namespace} regcred --output 'jsonpath={.data.\.dockerconfigjson}')
-kind: Secret
-metadata:
-  name: ${_secret_name}
-  namespace: ${_target_namespace}
-type: kubernetes.io/dockerconfigjson
-EOF
-}
-
-function initializeNamespace() {
-    local -r _target_namespace="${1}"
-    kubectl create ns "${_target_namespace}" --dry-run=client --output yaml | kubectl apply -f -
-    copyRegistryCredentials "${_target_namespace}"
-}
-
 function generateRandomPassword() {
     LC_ALL=C tr -dc '[:alnum:]' </dev/urandom | dd bs=4 count=8 2>/dev/null
 }
@@ -127,29 +105,57 @@ function getShipaLoginInfo() {
 }
 
 function setupShipaCli() {
+    local -r _username="$(kubectl get secrets --namespace ${SHIPA_NAMESPACE} shipa-api-init-secret --output jsonpath='{.data.username}' | base64 --decode)"
     if [[ "$(shipa help 2>/dev/null | head -n1 | awk '{print $3}')" != "${SHIPA_CLI_VERSION}." ]]; then
         writeInfo "Installing Shipa CLI"
         curl -s https://storage.googleapis.com/shipa-client/install.sh | VERSION=${SHIPA_CLI_VERSION} bash
     fi
     writeInfo "Configuring Shipa CLI target named '${STACK}' at ${STACK_URL}:${API_EXTERNALPORT}"
     shipa target add ${STACK} ${STACK_URL} --port ${API_EXTERNALPORT} --set-current
-    shipa login
+    shipa login ${_username}
 }
 
-function redeployDashboardFromPrivateRegistry() {
-    for _version in $(shipa app deploy list --app dashboard | grep '| \*' | awk '{print $4}' | awk -F ':' '{print $3}'); do
-        shipa app deactivate --app dashboard --version ${_version/v/}
-    done
+function createCustomIngress() {
+    local -r _http_def="http:
+      paths:
+      - backend:
+          serviceName: dashboard-web-1
+          servicePort: 80
+        path: /
+        pathType: ImplementationSpecific"
 
-    writeInfo "Credentials to use to connect to private image registry:"
-    kubectl get secrets --namespace ${SHIPA_NAMESPACE} regcred --output 'jsonpath={.data.\.dockerconfigjson}' | base64 --decode | jq ".auths[\"${PRIVATE_REGISTRY_URL}\"]"
-    shipa app deploy --app dashboard --image ${PRIVATE_REGISTRY_URL}/shipasoftware/dashboard:v${SHIPA_DASHBOARD_VERSION} --private-image
+    cat <<EOF | kubectl apply --namespace "${SHIPA_NAMESPACE}" -f -
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: vault-issuer
+    cert-manager.io/common-name: ${STACK_URL}
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+  labels:
+    app.kubernetes.io/name: openstack-configmaps
+  name: shipa-dashboard
+  namespace: ${SHIPA_SYSTEM}
+spec:
+  rules:
+  - host: ${STACK_URL}
+    ${_http_def}
+  - host: ${LIVE_URL}
+    ${_http_def}
+  - host: ${STANDBY_URL}
+    ${_http_def}
+  tls:
+  - hosts:
+    - ${STACK_URL}
+    - ${LIVE_URL}
+    - ${STANDBY_URL}
+    secretName: dashboard-ingress-tls
+EOF
 }
 
 export DIR="${DIR:-$(pwd)}"
 export SHIPA_REPO_NAME="shipa-helm-rc"
 export SHIPA_VERSION="1.3.0-rc-12"
-export SHIPA_DASHBOARD_VERSION="v1.3.0-rc-12-2" # TODO: pull from Values file: yq r values.yaml dashboard.image
 export SHIPA_CLI_VERSION="1.3.0-rc-7"
 export PRIVATE_REGISTRY_URL="docker-virtual.artifactory.renhsc.com"
 export BUILDKIT_FRONTEND_SOURCE=${PRIVATE_REGISTRY_URL}/docker/dockerfile
@@ -174,15 +180,8 @@ if [[ -z "${STACK}" ]]; then
     exitError "Could not pull cluster metadata. Aborting."
 fi
 
-initializeNamespace "${SHIPA_NAMESPACE}"
-initializeNamespace "shipa"
 installMongoChart
 installShipaChart
 getShipaLoginInfo
 setupShipaCli
-
-read -p "Redeploy the dashboard app using private registry (y/N)? " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    redeployDashboardFromPrivateRegistry
-fi
+createCustomIngress
