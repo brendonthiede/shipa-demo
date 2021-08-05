@@ -1,6 +1,9 @@
 #!/bin/bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
+ADMIN_PASSWORD="${1:-$(LC_ALL=C tr -dc '[:alnum:]' </dev/urandom | dd bs=4 count=8 2>/dev/null)}"
+LICENSE_KEY="${2}"
+
 function writeMessage() {
     echo >&2 -e "[${1}] $(date "+%Y-%m-%d %H:%M:%S") ${2}"
 }
@@ -18,10 +21,6 @@ function writeInfo() {
     writeMessage "INFO" "${1}"
 }
 
-function generateRandomPassword() {
-    LC_ALL=C tr -dc '[:alnum:]' </dev/urandom | dd bs=4 count=8 2>/dev/null
-}
-
 function isHelmReleaseDeployed() {
     local -r _release_name="${1}"
     local -r _namespace="${2}"
@@ -35,20 +34,15 @@ function installChart() {
     local -r _chart="${2}"
     local -r _namespace="${3}"
 
-    if [[ "$(isHelmReleaseDeployed ${_release_name} ${_namespace})" ]]; then
-        writeInfo "Helm release ${_release_name} already exists."
-        return 1
-    else
-        writeInfo "Installing Helm release ${_release_name} from ${_chart} in the ${_namespace} namespace."
-        helm install ${_release_name} ${_chart} --namespace ${_namespace} --create-namespace --timeout 15m --values "${DIR}/values.override.yaml" || exit 1
-        writeInfo "Checking for a status of 'deployed'."
-        for i in {1..180}; do
-            [[ "$(isHelmReleaseDeployed ${_release_name} ${_namespace})" ]] && break || sleep 5
-            printf "."
-        done
-        printf "\n"
-        [[ "$(isHelmReleaseDeployed ${_release_name} ${_namespace})" ]] || exitError "Failed to install Helm release ${_release_name}"
-    fi
+    writeInfo "Installing Helm release ${_release_name} from ${_chart} in the ${_namespace} namespace."
+    helm upgrade --install ${_release_name} ${_chart} --namespace ${_namespace} --create-namespace --timeout 15m --values "${DIR}/values.override.yaml" || exit 1
+    writeInfo "Checking for a status of 'deployed'."
+    for i in {1..180}; do
+        [[ "$(isHelmReleaseDeployed ${_release_name} ${_namespace})" ]] && break || sleep 5
+        printf "."
+    done
+    printf "\n"
+    [[ "$(isHelmReleaseDeployed ${_release_name} ${_namespace})" ]] || exitError "Failed to install Helm release ${_release_name}"
 }
 
 function installMongoChart() {
@@ -56,7 +50,12 @@ function installMongoChart() {
 auth:
   rootPassword: $(generateRandomPassword)
 EOF
-    installChart mongodb ${MONGO_HELM_TGZ_URL} mongodb
+    if [[ "$(isHelmReleaseDeployed mongodb mongodb)" ]]; then
+        writeInfo "Helm release mongodb already exists."
+        return 1
+    else
+        installChart mongodb ${MONGO_HELM_TGZ_URL} mongodb
+    fi
 }
 
 function installShipaChart() {
@@ -82,8 +81,9 @@ service:
     etcdNodePort: 32202
     dockerRegistryNodePort: 32203
 auth:
-  adminUser: shipa@deltadentalmi.com
-  adminPassword: $(generateRandomPassword)
+  adminUser: shipa@shipa.demo
+  adminPassword: ${ADMIN_PASSWORD}
+$([[ -n "${LICENSE_KEY}" ]] && echo "license: ${LICENSE_KEY}")
 shipaApi:
   debug: true
   cnames: ["${STACK_URL}", "${LIVE_URL}", "${STANDBY_URL}"]
